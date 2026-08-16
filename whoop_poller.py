@@ -108,22 +108,27 @@ def remap(fields_dict, mapping):
     return {mapping[k]: v for k, v in fields_dict.items() if v is not None}
 
 
-def airtable_upsert(table_id, id_field_id, record_id, fields):
+def airtable_upsert(table_id, id_field_name, id_field_id, record_id, fields):
+    """Create or update a record, searching the ENTIRE table (paginated)
+    rather than just the first page, so this stays correct as tables grow
+    past 100+ records."""
     headers = {
         "Authorization": f"Bearer {AIRTABLE_API_KEY}",
         "Content-Type": "application/json",
     }
     url = f"{AIRTABLE_API_BASE}/{AIRTABLE_BASE_ID}/{table_id}"
-    # Airtable filterByFormula needs the field NAME, but we only have IDs here.
-    # We look up by listing recent records and matching client-side instead,
-    # which avoids needing field names at all.
-    resp = requests.get(url, headers=headers, params={"pageSize": 100})
+
+    # Use filterByFormula with the human-readable field name -- this lets
+    # Airtable do the search server-side instead of us paginating through
+    # potentially thousands of records client-side.
+    escaped = record_id.replace("'", "\\'")
+    resp = requests.get(url, headers=headers, params={
+        "filterByFormula": f"{{{id_field_name}}} = '{escaped}'",
+        "maxRecords": 1,
+    })
     resp.raise_for_status()
-    existing = None
-    for rec in resp.json().get("records", []):
-        if rec.get("fields", {}).get(id_field_id) == record_id:
-            existing = rec["id"]
-            break
+    existing_records = resp.json().get("records", [])
+    existing = existing_records[0]["id"] if existing_records else None
 
     if existing:
         requests.patch(f"{url}/{existing}", headers=headers,
@@ -167,7 +172,7 @@ def main():
             "SpO2 (%)": s.get("spo2_percentage"), "Skin Temp (C)": s.get("skin_temp_celsius"),
             "Sleep ID": r["sleep_id"], "Cycle ID": str(r["cycle_id"]),
         }, REC_F)
-        airtable_upsert(AIRTABLE_TABLES["recovery"], REC_F["Sleep ID"], r["sleep_id"], f)
+        airtable_upsert(AIRTABLE_TABLES["recovery"], "Sleep ID", REC_F["Sleep ID"], r["sleep_id"], f)
         n_written += 1
 
     for s in sleep:
@@ -184,7 +189,7 @@ def main():
             "Respiratory Rate": score.get("respiratory_rate"), "Nap": s.get("nap", False),
             "Sleep ID": s["id"],
         }, SLEEP_F)
-        airtable_upsert(AIRTABLE_TABLES["sleep"], SLEEP_F["Sleep ID"], s["id"], f)
+        airtable_upsert(AIRTABLE_TABLES["sleep"], "Sleep ID", SLEEP_F["Sleep ID"], s["id"], f)
         n_written += 1
 
     for w in workouts:
@@ -197,7 +202,7 @@ def main():
             "Max HR (bpm)": score.get("max_heart_rate"), "Kilojoules": score.get("kilojoule"),
             "Distance (m)": score.get("distance_meter"), "Workout ID": w["id"],
         }, WO_F)
-        airtable_upsert(AIRTABLE_TABLES["workout"], WO_F["Workout ID"], w["id"], f)
+        airtable_upsert(AIRTABLE_TABLES["workout"], "Workout ID", WO_F["Workout ID"], w["id"], f)
         n_written += 1
 
     for c in cycles:
@@ -209,7 +214,7 @@ def main():
             "Avg HR (bpm)": score.get("average_heart_rate"), "Max HR (bpm)": score.get("max_heart_rate"),
             "Kilojoules": score.get("kilojoule"), "Cycle ID": str(c["id"]),
         }, CYC_F)
-        airtable_upsert(AIRTABLE_TABLES["cycle"], CYC_F["Cycle ID"], str(c["id"]), f)
+        airtable_upsert(AIRTABLE_TABLES["cycle"], "Cycle ID", CYC_F["Cycle ID"], str(c["id"]), f)
         n_written += 1
 
     print(f"Upserted {n_written} records into Airtable.")
